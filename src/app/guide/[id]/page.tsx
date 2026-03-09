@@ -36,25 +36,25 @@ export default async function GuidePage({ params }: { params: Promise<{ id: stri
   return (
     <div className="min-h-screen bg-[#0f0f0f] text-white">
       {/* Header */}
-      <header className="border-b border-white/10 px-6 py-4 sticky top-0 bg-[#0f0f0f]/95 backdrop-blur z-10">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2 text-orange-400 hover:text-orange-300 transition-colors">
+      <header className="border-b border-white/10 px-4 py-4 sticky top-0 bg-[#0f0f0f]/95 backdrop-blur z-10">
+        <div className="max-w-4xl mx-auto flex items-center justify-between gap-3">
+          <Link href="/" className="flex items-center gap-2 text-orange-400 hover:text-orange-300 transition-colors shrink-0">
             <span>←</span>
             <span className="text-xl font-bold">ProjectCar</span>
           </Link>
           {car && (
-            <span className="text-sm text-white/40">{car.year} {car.make} {car.model}</span>
+            <span className="text-sm text-white/40 truncate">{car.year} {car.make} {car.model}</span>
           )}
         </div>
       </header>
 
-      <main className="max-w-4xl mx-auto px-6 py-10">
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 py-8 sm:py-10">
         {/* Guide Header */}
         <div className="mb-8">
           {car && (
             <p className="text-sm text-white/40 mb-2">{car.year} {car.make} {car.model}</p>
           )}
-          <h1 className="text-3xl md:text-4xl font-bold text-white mb-4">{guide.task}</h1>
+          <h1 className="text-2xl sm:text-3xl md:text-4xl font-bold text-white mb-4">{guide.task}</h1>
 
           <div className="flex flex-wrap items-center gap-3 mb-5">
             <span className={`text-sm px-3 py-1 rounded-full border ${diff.bg} ${diff.color} font-medium`}>
@@ -77,7 +77,7 @@ export default async function GuidePage({ params }: { params: Promise<{ id: stri
           )}
         </div>
 
-        <div className="grid md:grid-cols-3 gap-6 mb-10">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6 mb-8 sm:mb-10">
           {/* Tools Needed */}
           {guide.tools_needed && guide.tools_needed.length > 0 && (
             <div className="bg-white/5 border border-white/10 rounded-xl p-5">

@@ -28,16 +28,24 @@ const DIFFICULTY_STYLES: Record<string, { label: string; color: string }> = {
   Professional: { label: 'Professional', color: 'bg-red-500/20 text-red-400 border-red-500/30' },
 }
 
+const INPUT_CLS = 'w-full bg-white/5 border border-white/15 rounded-lg px-3 py-3 text-white text-base focus:outline-none focus:border-orange-400/60 transition-colors'
+const SELECT_CLS = INPUT_CLS + ' appearance-none'
+
 export default function Home() {
   const router = useRouter()
-  const [make, setMake] = useState('')
+  const [makeSelect, setMakeSelect] = useState('')
+  const [makeCustom, setMakeCustom] = useState('')
   const [model, setModel] = useState('')
   const [year, setYear] = useState(String(CURRENT_YEAR))
-  const [task, setTask] = useState('')
+  const [taskSelect, setTaskSelect] = useState('')
+  const [taskCustom, setTaskCustom] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [recentGuides, setRecentGuides] = useState<Guide[]>([])
   const [loadingRecent, setLoadingRecent] = useState(true)
+
+  const make = makeSelect === 'other' ? makeCustom.trim() : makeSelect
+  const task = taskSelect === 'other' ? taskCustom.trim() : taskSelect
 
   useEffect(() => {
     fetch('/api/guides/recent')
@@ -74,60 +82,76 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#0f0f0f] text-white">
       {/* Header */}
-      <header className="border-b border-white/10 px-6 py-4">
+      <header className="border-b border-white/10 px-4 py-4">
         <div className="max-w-5xl mx-auto flex items-center gap-3">
           <span className="text-2xl">🔧</span>
           <span className="text-xl font-bold text-orange-400">ProjectCar</span>
-          <span className="text-sm text-white/40 ml-2">DIY Maintenance Guides</span>
+          <span className="text-sm text-white/40 ml-2 hidden sm:inline">DIY Maintenance Guides</span>
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-12">
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
         {/* Hero */}
-        <div className="text-center mb-12">
-          <h1 className="text-4xl md:text-5xl font-bold mb-4">
+        <div className="text-center mb-8 sm:mb-12">
+          <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold mb-4">
             Fix your car.<br />
             <span className="text-orange-400">Step by step.</span>
           </h1>
-          <p className="text-white/50 text-lg max-w-xl mx-auto">
+          <p className="text-white/50 text-base sm:text-lg max-w-xl mx-auto">
             AI-powered repair guides with factory torque specs, tool lists, and detailed instructions.
             Shared by the community, built for everyone.
           </p>
         </div>
 
         {/* Search Form */}
-        <form onSubmit={handleSubmit} className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-12">
+        <form onSubmit={handleSubmit} className="bg-white/5 border border-white/10 rounded-2xl p-4 sm:p-6 mb-8 sm:mb-12">
           <h2 className="text-lg font-semibold mb-5 text-white/80">What are you working on?</h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
             {/* Year */}
             <div>
               <label className="block text-xs text-white/40 mb-1.5 uppercase tracking-wider">Year</label>
-              <select
-                value={year}
-                onChange={e => setYear(e.target.value)}
-                className="w-full bg-white/5 border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-orange-400/60 transition-colors"
-              >
-                {YEARS.map(y => (
-                  <option key={y} value={y} className="bg-[#1a1a1a]">{y}</option>
-                ))}
-              </select>
+              <div className="relative">
+                <select
+                  value={year}
+                  onChange={e => setYear(e.target.value)}
+                  className={SELECT_CLS}
+                >
+                  {YEARS.map(y => (
+                    <option key={y} value={y} className="bg-[#1a1a1a]">{y}</option>
+                  ))}
+                </select>
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/40 text-xs">▼</span>
+              </div>
             </div>
 
             {/* Make */}
             <div>
               <label className="block text-xs text-white/40 mb-1.5 uppercase tracking-wider">Make</label>
-              <input
-                type="text"
-                list="makes-list"
-                value={make}
-                onChange={e => setMake(e.target.value)}
-                placeholder="e.g. Nissan"
-                className="w-full bg-white/5 border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/25 focus:outline-none focus:border-orange-400/60 transition-colors"
-              />
-              <datalist id="makes-list">
-                {POPULAR_MAKES.map(m => <option key={m} value={m} />)}
-              </datalist>
+              <div className="relative">
+                <select
+                  value={makeSelect}
+                  onChange={e => setMakeSelect(e.target.value)}
+                  className={SELECT_CLS + (makeSelect === '' ? ' text-white/25' : '')}
+                >
+                  <option value="" disabled className="bg-[#1a1a1a] text-white/50">e.g. Nissan</option>
+                  {POPULAR_MAKES.map(m => (
+                    <option key={m} value={m} className="bg-[#1a1a1a] text-white">{m}</option>
+                  ))}
+                  <option value="other" className="bg-[#1a1a1a] text-white">Other…</option>
+                </select>
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/40 text-xs">▼</span>
+              </div>
+              {makeSelect === 'other' && (
+                <input
+                  type="text"
+                  value={makeCustom}
+                  onChange={e => setMakeCustom(e.target.value)}
+                  placeholder="Enter make"
+                  autoFocus
+                  className={INPUT_CLS + ' mt-2 placeholder:text-white/25'}
+                />
+              )}
             </div>
 
             {/* Model */}
@@ -138,7 +162,7 @@ export default function Home() {
                 value={model}
                 onChange={e => setModel(e.target.value)}
                 placeholder="e.g. 350Z"
-                className="w-full bg-white/5 border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/25 focus:outline-none focus:border-orange-400/60 transition-colors"
+                className={INPUT_CLS + ' placeholder:text-white/25'}
               />
             </div>
           </div>
@@ -146,17 +170,30 @@ export default function Home() {
           {/* Task */}
           <div className="mb-2">
             <label className="block text-xs text-white/40 mb-1.5 uppercase tracking-wider">What do you want to do?</label>
-            <input
-              type="text"
-              list="tasks-list"
-              value={task}
-              onChange={e => setTask(e.target.value)}
-              placeholder="e.g. Replace radiator, Oil change, Brake pad replacement…"
-              className="w-full bg-white/5 border border-white/15 rounded-lg px-3 py-2.5 text-white text-sm placeholder:text-white/25 focus:outline-none focus:border-orange-400/60 transition-colors"
-            />
-            <datalist id="tasks-list">
-              {POPULAR_TASKS.map(t => <option key={t} value={t} />)}
-            </datalist>
+            <div className="relative">
+              <select
+                value={taskSelect}
+                onChange={e => setTaskSelect(e.target.value)}
+                className={SELECT_CLS + (taskSelect === '' ? ' text-white/25' : '')}
+              >
+                <option value="" disabled className="bg-[#1a1a1a] text-white/50">e.g. Oil change, Brake pad replacement…</option>
+                {POPULAR_TASKS.map(t => (
+                  <option key={t} value={t} className="bg-[#1a1a1a] text-white">{t}</option>
+                ))}
+                <option value="other" className="bg-[#1a1a1a] text-white">Other / type your own…</option>
+              </select>
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/40 text-xs">▼</span>
+            </div>
+            {taskSelect === 'other' && (
+              <input
+                type="text"
+                value={taskCustom}
+                onChange={e => setTaskCustom(e.target.value)}
+                placeholder="Describe the job, e.g. Replace radiator"
+                autoFocus
+                className={INPUT_CLS + ' mt-2 placeholder:text-white/25'}
+              />
+            )}
           </div>
 
           {error && (
@@ -166,11 +203,11 @@ export default function Home() {
           <button
             type="submit"
             disabled={loading}
-            className="mt-5 w-full bg-orange-500 hover:bg-orange-400 disabled:bg-orange-500/40 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-colors flex items-center justify-center gap-2"
+            className="mt-5 w-full bg-orange-500 hover:bg-orange-400 active:bg-orange-600 disabled:bg-orange-500/40 disabled:cursor-not-allowed text-white font-semibold py-3.5 px-6 rounded-xl transition-colors flex items-center justify-center gap-2 text-base"
           >
             {loading ? (
               <>
-                <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
+                <svg className="animate-spin h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
@@ -195,7 +232,7 @@ export default function Home() {
         <div>
           <h2 className="text-lg font-semibold text-white/70 mb-4">Community Guides</h2>
           {loadingRecent ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {[...Array(6)].map((_, i) => (
                 <div key={i} className="bg-white/5 border border-white/10 rounded-xl p-4 animate-pulse">
                   <div className="h-4 bg-white/10 rounded mb-2 w-3/4" />
@@ -208,7 +245,7 @@ export default function Home() {
               No guides yet — be the first to create one above!
             </p>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {recentGuides.map(guide => {
                 const car = guide.pc_cars
                 const diff = DIFFICULTY_STYLES[guide.difficulty] || DIFFICULTY_STYLES.Beginner
@@ -216,7 +253,7 @@ export default function Home() {
                   <a
                     key={guide.id}
                     href={`/guide/${guide.id}`}
-                    className="group bg-white/5 border border-white/10 hover:border-orange-400/30 hover:bg-white/8 rounded-xl p-4 transition-all"
+                    className="group bg-white/5 border border-white/10 hover:border-orange-400/30 active:bg-white/10 rounded-xl p-4 transition-all"
                   >
                     <div className="flex items-start justify-between mb-2 gap-2">
                       <span className={`text-xs px-2 py-0.5 rounded-full border ${diff.color} shrink-0`}>
@@ -240,7 +277,7 @@ export default function Home() {
         </div>
       </main>
 
-      <footer className="border-t border-white/10 mt-16 py-8 px-6 text-center text-white/25 text-sm">
+      <footer className="border-t border-white/10 mt-16 py-8 px-4 text-center text-white/25 text-sm">
         ProjectCar — Community-powered car maintenance guides
       </footer>
     </div>
