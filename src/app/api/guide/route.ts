@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+
+export const maxDuration = 60 // seconds
 import Anthropic from '@anthropic-ai/sdk'
 import { findOrCreateCar, findGuide, saveGuide, slugify } from '@/lib/guides'
 import { Guide, GuideStep, Tool, Part, Spec } from '@/lib/supabase'
@@ -88,9 +90,8 @@ Important:
     const stream = anthropic.messages.stream({
       model: 'claude-opus-4-6',
       max_tokens: 8000,
-      thinking: { type: 'adaptive' },
       tools: [
-        { type: 'web_search_20260209', name: 'web_search' },
+        { type: 'web_search_20250305', name: 'web_search' },
       ],
       messages: [{ role: 'user', content: prompt }],
     })
@@ -164,11 +165,10 @@ Important:
 
     return NextResponse.json({ guide: savedGuide, cached: false })
   } catch (err) {
-    if (err instanceof Anthropic.APIError) {
-      console.error('Anthropic API error:', err.status, err.message)
-      return NextResponse.json({ error: `AI service error: ${err.message}` }, { status: err.status })
-    }
-    throw err
+    console.error('Guide generation error:', err)
+    const message = err instanceof Error ? err.message : 'Unknown error'
+    const status = err instanceof Anthropic.APIError ? err.status : 500
+    return NextResponse.json({ error: `Failed to generate guide: ${message}` }, { status })
   }
 }
 
