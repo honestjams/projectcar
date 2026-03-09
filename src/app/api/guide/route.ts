@@ -9,33 +9,45 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 })
 
+function jsonError(message: string, status = 500) {
+  return NextResponse.json({ error: message }, { status })
+}
+
 export async function POST(req: NextRequest) {
-  const { make, model, year, task } = await req.json()
+  try {
+    // --- Parse & validate input ---
+    let body: { make?: unknown; model?: unknown; year?: unknown; task?: unknown }
+    try {
+      body = await req.json()
+    } catch {
+      return jsonError('Invalid request body', 400)
+    }
 
-  if (!make || !model || !year || !task) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
-  }
+    const make  = typeof body.make  === 'string' ? body.make.trim()  : ''
+    const model = typeof body.model === 'string' ? body.model.trim() : ''
+    const task  = typeof body.task  === 'string' ? body.task.trim()  : ''
+    const year  = Number(body.year)
 
-  // 1. Find or create the car record
-  const car = await findOrCreateCar(make, model, year)
-  if (!car) {
-    return NextResponse.json({ error: 'Failed to create car record' }, { status: 500 })
-  }
+    if (!make || !model || !task || !year || isNaN(year)) {
+      return jsonError('Missing required fields: make, model, year, task', 400)
+    }
 
-  const taskSlug = slugify(task)
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return jsonError('Anthropic API key not configured', 500)
+    }
 
-  // 2. Check if guide already exists
-  const existing = await findGuide(car.id, taskSlug)
-  if (existing) {
-    return NextResponse.json({ guide: existing, cached: true })
-  }
+    // --- 1. Find or create car ---
+    const car = await findOrCreateCar(make, model, year)
+    if (!car) return jsonError('Failed to create car record')
 
-  // 3. Generate guide using Claude with web search
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return NextResponse.json({ error: 'Anthropic API key not configured' }, { status: 500 })
-  }
+    const taskSlug = slugify(task)
 
-  const prompt = `You are an expert automotive mechanic and technical writer. Generate a detailed, step-by-step maintenance guide for the following:
+    // --- 2. Return cached guide if exists ---
+    const existing = await findGuide(car.id, taskSlug)
+    if (existing) return NextResponse.json({ guide: existing, cached: true })
+
+    // --- 3. Generate guide with Claude ---
+    const prompt = `You are an expert automotive mechanic and technical writer. Generate a detailed, step-by-step maintenance guide for the following:
 
 Vehicle: ${year} ${make} ${model}
 Task: ${task}
@@ -86,49 +98,38 @@ Important:
 - The image_search_query should be specific to help find instructional images (e.g. "${year} ${make} ${model} radiator drain plug location")
 - Only output valid JSON, nothing else`
 
-  try {
-    const userMessages: AMessageParam[] = [
-      { role: 'user', content: prompt }
-    ]
+    const userMessages: AMessageParam[] = [{ role: 'user', content: prompt }]
     let lastMessage: Anthropic.Message | null = null
-    let continuations = 0
     const MAX_CONTINUATIONS = 5
 
-    while (continuations <= MAX_CONTINUATIONS) {
+    for (let i = 0; i <= MAX_CONTINUATIONS; i++) {
       const stream = anthropic.messages.stream({
         model: 'claude-opus-4-6',
         max_tokens: 8000,
         thinking: { type: 'adaptive' },
-        tools: [
-          { type: 'web_search_20260209', name: 'web_search' },
-        ],
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
         messages: userMessages,
       })
-
       lastMessage = await stream.finalMessage()
-
       if (lastMessage.stop_reason !== 'pause_turn') break
-
-      // Server-side search loop hit its limit — continue from where it left off
       userMessages.push({ role: 'assistant', content: lastMessage.content })
-      continuations++
     }
 
-    if (!lastMessage) {
-      return NextResponse.json({ error: 'No response from AI' }, { status: 500 })
-    }
+    if (!lastMessage) return jsonError('No response from AI')
 
     // Use the LAST text block — earlier ones may be intermediate "searching…" messages
-    const textContent = [...lastMessage.content].reverse().find(b => b.type === 'text')
-    if (!textContent || textContent.type !== 'text') {
-      return NextResponse.json({ error: 'No text response from AI' }, { status: 500 })
-    }
+    const textBlock = [...lastMessage.content].reverse().find(b => b.type === 'text')
+    if (!textBlock || textBlock.type !== 'text') return jsonError('No text response from AI')
 
-    // Parse the JSON — strip markdown code fences if present
-    let jsonText = textContent.text.trim()
+    // Strip markdown code fences if present
+    let jsonText = textBlock.text.trim()
     const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/)
-    if (fenceMatch) {
-      jsonText = fenceMatch[1].trim()
+    if (fenceMatch) jsonText = fenceMatch[1].trim()
+
+    // If the model wrapped it in extra prose, try to extract the JSON object
+    if (!jsonText.startsWith('{')) {
+      const objMatch = jsonText.match(/\{[\s\S]*\}/)
+      if (objMatch) jsonText = objMatch[0]
     }
 
     let guideData: {
@@ -152,61 +153,72 @@ Important:
     try {
       guideData = JSON.parse(jsonText)
     } catch {
-      console.error('Failed to parse guide JSON:', jsonText.slice(0, 500))
-      return NextResponse.json({ error: 'Failed to parse AI response' }, { status: 500 })
+      console.error('Failed to parse guide JSON. Raw text (first 500):', jsonText.slice(0, 500))
+      return jsonError('AI returned an unreadable response — please try again')
     }
 
-    // 4. Save to database
+    // Normalise difficulty to valid enum value
+    const VALID_DIFFICULTIES = ['Beginner', 'Intermediate', 'Advanced', 'Professional'] as const
+    type Difficulty = typeof VALID_DIFFICULTIES[number]
+    const rawDiff = String(guideData.difficulty ?? '')
+    const difficulty: Difficulty = (VALID_DIFFICULTIES as readonly string[]).includes(rawDiff)
+      ? rawDiff as Difficulty
+      : 'Intermediate'
+
+    // --- 4. Save to database ---
     const guideRecord: Omit<Guide, 'id' | 'created_at' | 'updated_at'> = {
       car_id: car.id,
       task: guideData.task || task,
       task_slug: taskSlug,
-      overview: guideData.overview,
-      difficulty: guideData.difficulty,
-      estimated_time: guideData.estimated_time,
-      tools_needed: guideData.tools_needed || [],
-      parts_needed: guideData.parts_needed || [],
-      safety_notes: guideData.safety_notes || [],
+      overview: guideData.overview ?? '',
+      difficulty,
+      estimated_time: guideData.estimated_time ?? '',
+      tools_needed: Array.isArray(guideData.tools_needed) ? guideData.tools_needed : [],
+      parts_needed: Array.isArray(guideData.parts_needed) ? guideData.parts_needed : [],
+      safety_notes: Array.isArray(guideData.safety_notes) ? guideData.safety_notes : [],
     }
 
-    const steps: Omit<GuideStep, 'id' | 'guide_id' | 'created_at'>[] = (guideData.steps || []).map(s => ({
+    const steps: Omit<GuideStep, 'id' | 'guide_id' | 'created_at'>[] = (guideData.steps ?? []).map(s => ({
       step_number: s.step_number,
-      title: s.title,
-      description: s.description,
-      specs: s.specs || [],
-      tips: s.tips || [],
-      image_search_query: s.image_search_query || null,
+      title: s.title ?? '',
+      description: s.description ?? '',
+      specs: Array.isArray(s.specs) ? s.specs : [],
+      tips: Array.isArray(s.tips) ? s.tips : [],
+      image_search_query: s.image_search_query ?? null,
     }))
 
     const savedGuide = await saveGuide(guideRecord, steps)
-    if (!savedGuide) {
-      return NextResponse.json({ error: 'Failed to save guide' }, { status: 500 })
-    }
+    if (!savedGuide) return jsonError('Failed to save guide to database')
 
     return NextResponse.json({ guide: savedGuide, cached: false })
+
   } catch (err) {
-    console.error('Guide generation error:', err)
-    const message = err instanceof Error ? err.message : 'Unknown error'
-    const status = err instanceof Anthropic.APIError ? err.status : 500
-    return NextResponse.json({ error: `Failed to generate guide: ${message}` }, { status })
+    console.error('Unhandled /api/guide error:', err)
+    const msg = err instanceof Error ? err.message : String(err)
+    const status = err instanceof Anthropic.APIError ? (err.status ?? 500) : 500
+    return jsonError(`Guide generation failed: ${msg}`, status)
   }
 }
 
 export async function GET(req: NextRequest) {
-  const { searchParams } = new URL(req.url)
-  const make = searchParams.get('make')
-  const model = searchParams.get('model')
-  const year = searchParams.get('year')
-  const task = searchParams.get('task')
+  try {
+    const { searchParams } = new URL(req.url)
+    const make  = searchParams.get('make')
+    const model = searchParams.get('model')
+    const year  = searchParams.get('year')
+    const task  = searchParams.get('task')
 
-  if (!make || !model || !year || !task) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
+    if (!make || !model || !year || !task) {
+      return jsonError('Missing required fields', 400)
+    }
+
+    const car = await findOrCreateCar(make, model, parseInt(year))
+    if (!car) return NextResponse.json({ guide: null })
+
+    const guide = await findGuide(car.id, slugify(task))
+    return NextResponse.json({ guide })
+  } catch (err) {
+    console.error('Unhandled /api/guide GET error:', err)
+    return jsonError('Failed to fetch guide')
   }
-
-  const { findOrCreateCar: findCar, findGuide: lookupGuide, slugify: slug } = await import('@/lib/guides')
-  const car = await findCar(make, model, parseInt(year))
-  if (!car) return NextResponse.json({ guide: null })
-
-  const guide = await lookupGuide(car.id, slug(task))
-  return NextResponse.json({ guide })
 }
