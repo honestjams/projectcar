@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
-
-export const maxDuration = 60 // seconds
 import Anthropic from '@anthropic-ai/sdk'
 import { findOrCreateCar, findGuide, saveGuide, slugify } from '@/lib/guides'
 import { Guide, GuideStep, Tool, Part, Spec } from '@/lib/supabase'
+
+export const maxDuration = 60 // seconds
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
