@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic from '@anthropic-ai/sdk'
+import Anthropic, { type MessageParam as AMessageParam } from '@anthropic-ai/sdk'
 import { findOrCreateCar, findGuide, saveGuide, slugify } from '@/lib/guides'
 import { Guide, GuideStep, Tool, Part, Spec } from '@/lib/supabase'
 
@@ -87,21 +87,41 @@ Important:
 - Only output valid JSON, nothing else`
 
   try {
-    const stream = anthropic.messages.stream({
-      model: 'claude-opus-4-6',
-      max_tokens: 8000,
-      tools: [
-        { type: 'web_search_20250305', name: 'web_search' },
-      ],
-      messages: [{ role: 'user', content: prompt }],
-    })
+    const userMessages: AMessageParam[] = [
+      { role: 'user', content: prompt }
+    ]
+    let lastMessage: Anthropic.Message | null = null
+    let continuations = 0
+    const MAX_CONTINUATIONS = 5
 
-    const message = await stream.finalMessage()
+    while (continuations <= MAX_CONTINUATIONS) {
+      const stream = anthropic.messages.stream({
+        model: 'claude-opus-4-6',
+        max_tokens: 8000,
+        thinking: { type: 'adaptive' },
+        tools: [
+          { type: 'web_search_20260209', name: 'web_search' },
+        ],
+        messages: userMessages,
+      })
 
-    // Extract the JSON text from the response
-    const textContent = message.content.find(b => b.type === 'text')
-    if (!textContent || textContent.type !== 'text') {
+      lastMessage = await stream.finalMessage()
+
+      if (lastMessage.stop_reason !== 'pause_turn') break
+
+      // Server-side search loop hit its limit — continue from where it left off
+      userMessages.push({ role: 'assistant', content: lastMessage.content })
+      continuations++
+    }
+
+    if (!lastMessage) {
       return NextResponse.json({ error: 'No response from AI' }, { status: 500 })
+    }
+
+    // Use the LAST text block — earlier ones may be intermediate "searching…" messages
+    const textContent = [...lastMessage.content].reverse().find(b => b.type === 'text')
+    if (!textContent || textContent.type !== 'text') {
+      return NextResponse.json({ error: 'No text response from AI' }, { status: 500 })
     }
 
     // Parse the JSON — strip markdown code fences if present
