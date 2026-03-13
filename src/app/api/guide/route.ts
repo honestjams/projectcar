@@ -105,25 +105,12 @@ Rules:
 
     let guideJson: string
     try {
-      // Try with adaptive thinking first; fall back to standard if the API rejects it
-      let response: Anthropic.Message
-      try {
-        response = await anthropic.messages.create({
-          model: 'claude-opus-4-6',
-          max_tokens: 8000,
-          thinking: { type: 'adaptive' },
-          messages: [{ role: 'user', content: prompt }],
-        })
-      } catch (thinkingErr) {
-        console.warn('[/api/guide] Adaptive thinking rejected, retrying without:', thinkingErr)
-        response = await anthropic.messages.create({
-          model: 'claude-opus-4-6',
-          max_tokens: 8000,
-          messages: [{ role: 'user', content: prompt }],
-        })
-      }
+      const response = await anthropic.messages.create({
+        model: 'claude-opus-4-6',
+        max_tokens: 8000,
+        messages: [{ role: 'user', content: prompt }],
+      })
 
-      // Get the last text block — thinking blocks come before the final text
       const textBlock = [...response.content].reverse().find(b => b.type === 'text')
       if (!textBlock || textBlock.type !== 'text') {
         return jsonError('AI returned no text content', 500, 'ai_response')
