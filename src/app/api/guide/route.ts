@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import Anthropic, { type MessageParam as AMessageParam } from '@anthropic-ai/sdk'
+import Anthropic from '@anthropic-ai/sdk'
 import { findOrCreateCar, findGuide, saveGuide, slugify } from '@/lib/guides'
 import { Guide, GuideStep, Tool, Part, Spec } from '@/lib/supabase'
 
@@ -9,18 +9,19 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 })
 
-function jsonError(message: string, status = 500) {
-  return NextResponse.json({ error: message }, { status })
+function jsonError(message: string, status = 500, step?: string) {
+  const body = step ? { error: message, step } : { error: message }
+  return NextResponse.json(body, { status })
 }
 
 export async function POST(req: NextRequest) {
   try {
-    // --- Parse & validate input ---
-    let body: { make?: unknown; model?: unknown; year?: unknown; task?: unknown }
+    // ── Step 1: parse request ────────────────────────────────────────────────
+    let body: Record<string, unknown>
     try {
       body = await req.json()
     } catch {
-      return jsonError('Invalid request body', 400)
+      return jsonError('Invalid JSON in request body', 400, 'parse')
     }
 
     const make  = typeof body.make  === 'string' ? body.make.trim()  : ''
@@ -29,113 +30,115 @@ export async function POST(req: NextRequest) {
     const year  = Number(body.year)
 
     if (!make || !model || !task || !year || isNaN(year)) {
-      return jsonError('Missing required fields: make, model, year, task', 400)
+      return jsonError('Missing required fields: make, model, year, task', 400, 'validate')
     }
 
     if (!process.env.ANTHROPIC_API_KEY) {
-      return jsonError('Anthropic API key not configured', 500)
+      return jsonError('Anthropic API key not configured', 500, 'config')
     }
 
-    // --- 1. Find or create car ---
-    const car = await findOrCreateCar(make, model, year)
-    if (!car) return jsonError('Failed to create car record')
+    // ── Step 2: find or create car ───────────────────────────────────────────
+    let car
+    try {
+      car = await findOrCreateCar(make, model, year)
+    } catch (e) {
+      console.error('[/api/guide] findOrCreateCar threw:', e)
+      return jsonError(`Database error looking up car: ${e instanceof Error ? e.message : String(e)}`, 500, 'db_car')
+    }
+    if (!car) return jsonError('Failed to create car record', 500, 'db_car')
 
     const taskSlug = slugify(task)
 
-    // --- 2. Return cached guide if exists ---
-    const existing = await findGuide(car.id, taskSlug)
+    // ── Step 3: return cached guide if it exists ─────────────────────────────
+    let existing
+    try {
+      existing = await findGuide(car.id, taskSlug)
+    } catch (e) {
+      console.error('[/api/guide] findGuide threw:', e)
+      // Non-fatal — just proceed to generate
+    }
     if (existing) return NextResponse.json({ guide: existing, cached: true })
 
-    // --- 3. Generate guide with Claude ---
-    const prompt = `You are an expert automotive mechanic and technical writer. Generate a detailed, step-by-step maintenance guide for the following:
+    // ── Step 4: generate guide with Claude ───────────────────────────────────
+    const prompt = `You are an expert automotive mechanic and technical writer with access to factory service manuals.
 
+Generate a detailed, accurate, step-by-step maintenance guide for:
 Vehicle: ${year} ${make} ${model}
 Task: ${task}
 
-Search the web for:
-1. Factory service manual procedures for this specific vehicle
-2. OEM torque specifications
-3. Required tools with specific sizes (e.g., "14mm socket", "T30 Torx bit")
-4. Part numbers and specifications
-5. Common mistakes and tips from experienced mechanics
+Use your knowledge of factory service procedures, OEM torque specifications, and required tools for this specific vehicle.
 
-Then produce a complete JSON guide in EXACTLY this format (no extra text, just valid JSON):
+Respond with ONLY valid JSON in exactly this format — no extra text, no markdown fences:
 {
   "task": "${task}",
   "overview": "Brief 2-3 sentence description of what this job involves and why it matters",
-  "difficulty": "Beginner|Intermediate|Advanced|Professional",
-  "estimated_time": "e.g. 2-3 hours",
+  "difficulty": "Beginner",
+  "estimated_time": "e.g. 30-45 minutes",
   "tools_needed": [
-    { "name": "Tool name", "size": "e.g. 14mm", "type": "socket|wrench|screwdriver|specialty" }
+    { "name": "Tool name", "size": "e.g. 14mm", "type": "socket" }
   ],
   "parts_needed": [
-    { "name": "Part name", "part_number": "OEM or aftermarket part number if known", "quantity": 1, "notes": "any relevant notes" }
+    { "name": "Part name", "part_number": "OEM part number if known", "quantity": 1, "notes": "notes" }
   ],
   "safety_notes": [
-    "Safety warning 1",
-    "Safety warning 2"
+    "Safety warning 1"
   ],
   "steps": [
     {
       "step_number": 1,
       "title": "Short step title",
-      "description": "Detailed description of exactly what to do in this step. Be specific and clear.",
+      "description": "Detailed description of exactly what to do.",
       "specs": [
-        { "label": "Torque spec label", "value": "70", "unit": "Nm" }
+        { "label": "Torque spec", "value": "25", "unit": "Nm" }
       ],
-      "tips": [
-        "Helpful tip or common mistake to avoid"
-      ],
-      "image_search_query": "specific search query to find a relevant image for this step"
+      "tips": ["Helpful tip"],
+      "image_search_query": "${year} ${make} ${model} ${task} step 1"
     }
   ]
 }
 
-Important:
-- Include ALL torque specs in the relevant step's specs array
-- Be specific about tool sizes (metric preferred, include imperial equivalent)
-- Include at least 5-8 detailed steps
-- The image_search_query should be specific to help find instructional images (e.g. "${year} ${make} ${model} radiator drain plug location")
-- Only output valid JSON, nothing else`
+Rules:
+- difficulty must be exactly one of: Beginner, Intermediate, Advanced, Professional
+- Include ALL factory torque specs in the relevant step's specs array
+- Include at least 6 detailed steps
+- Output ONLY the JSON object — nothing before or after it`
 
-    const userMessages: AMessageParam[] = [{ role: 'user', content: prompt }]
-    let lastMessage: Anthropic.Message | null = null
-    const MAX_CONTINUATIONS = 5
-
-    for (let i = 0; i <= MAX_CONTINUATIONS; i++) {
-      const stream = anthropic.messages.stream({
+    let guideJson: string
+    try {
+      const response = await anthropic.messages.create({
         model: 'claude-opus-4-6',
         max_tokens: 8000,
-        thinking: { type: 'adaptive' },
-        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
-        messages: userMessages,
+        messages: [{ role: 'user', content: prompt }],
       })
-      lastMessage = await stream.finalMessage()
-      if (lastMessage.stop_reason !== 'pause_turn') break
-      userMessages.push({ role: 'assistant', content: lastMessage.content })
+
+      const textBlock = [...response.content].reverse().find(b => b.type === 'text')
+      if (!textBlock || textBlock.type !== 'text') {
+        return jsonError('AI returned no text content', 500, 'ai_response')
+      }
+      guideJson = textBlock.text.trim()
+    } catch (e) {
+      console.error('[/api/guide] Anthropic API error:', e)
+      const msg = e instanceof Anthropic.APIError
+        ? `AI API error ${e.status}: ${e.message}`
+        : `AI call failed: ${e instanceof Error ? e.message : String(e)}`
+      return jsonError(msg, 500, 'ai_call')
     }
 
-    if (!lastMessage) return jsonError('No response from AI')
+    // ── Step 5: parse the JSON response ─────────────────────────────────────
+    // Strip markdown fences if the model added them despite instructions
+    const fenceMatch = guideJson.match(/```(?:json)?\s*([\s\S]*?)```/)
+    if (fenceMatch) guideJson = fenceMatch[1].trim()
 
-    // Use the LAST text block — earlier ones may be intermediate "searching…" messages
-    const textBlock = [...lastMessage.content].reverse().find(b => b.type === 'text')
-    if (!textBlock || textBlock.type !== 'text') return jsonError('No text response from AI')
-
-    // Strip markdown code fences if present
-    let jsonText = textBlock.text.trim()
-    const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/)
-    if (fenceMatch) jsonText = fenceMatch[1].trim()
-
-    // If the model wrapped it in extra prose, try to extract the JSON object
-    if (!jsonText.startsWith('{')) {
-      const objMatch = jsonText.match(/\{[\s\S]*\}/)
-      if (objMatch) jsonText = objMatch[0]
+    // Extract bare JSON object if wrapped in prose
+    if (!guideJson.startsWith('{')) {
+      const objMatch = guideJson.match(/\{[\s\S]*\}/)
+      if (objMatch) guideJson = objMatch[0]
     }
 
     let guideData: {
       task: string
       overview: string
-      difficulty: 'Beginner' | 'Intermediate' | 'Advanced' | 'Professional'
+      difficulty: string
       estimated_time: string
       tools_needed: Tool[]
       parts_needed: Part[]
@@ -151,21 +154,19 @@ Important:
     }
 
     try {
-      guideData = JSON.parse(jsonText)
+      guideData = JSON.parse(guideJson)
     } catch {
-      console.error('Failed to parse guide JSON. Raw text (first 500):', jsonText.slice(0, 500))
-      return jsonError('AI returned an unreadable response — please try again')
+      console.error('[/api/guide] JSON parse failed, raw (500 chars):', guideJson.slice(0, 500))
+      return jsonError('AI returned malformed JSON — please try again', 500, 'ai_parse')
     }
 
-    // Normalise difficulty to valid enum value
+    // ── Step 6: normalise fields before saving ───────────────────────────────
     const VALID_DIFFICULTIES = ['Beginner', 'Intermediate', 'Advanced', 'Professional'] as const
     type Difficulty = typeof VALID_DIFFICULTIES[number]
-    const rawDiff = String(guideData.difficulty ?? '')
-    const difficulty: Difficulty = (VALID_DIFFICULTIES as readonly string[]).includes(rawDiff)
-      ? rawDiff as Difficulty
+    const difficulty: Difficulty = (VALID_DIFFICULTIES as readonly string[]).includes(guideData.difficulty)
+      ? guideData.difficulty as Difficulty
       : 'Intermediate'
 
-    // --- 4. Save to database ---
     const guideRecord: Omit<Guide, 'id' | 'created_at' | 'updated_at'> = {
       car_id: car.id,
       task: guideData.task || task,
@@ -178,25 +179,33 @@ Important:
       safety_notes: Array.isArray(guideData.safety_notes) ? guideData.safety_notes : [],
     }
 
-    const steps: Omit<GuideStep, 'id' | 'guide_id' | 'created_at'>[] = (guideData.steps ?? []).map(s => ({
-      step_number: s.step_number,
-      title: s.title ?? '',
-      description: s.description ?? '',
-      specs: Array.isArray(s.specs) ? s.specs : [],
-      tips: Array.isArray(s.tips) ? s.tips : [],
-      image_search_query: s.image_search_query ?? null,
-    }))
+    const steps: Omit<GuideStep, 'id' | 'guide_id' | 'created_at'>[] =
+      (Array.isArray(guideData.steps) ? guideData.steps : []).map(s => ({
+        step_number: s.step_number ?? 0,
+        title: s.title ?? '',
+        description: s.description ?? '',
+        specs: Array.isArray(s.specs) ? s.specs : [],
+        tips: Array.isArray(s.tips) ? s.tips : [],
+        image_search_query: s.image_search_query ?? null,
+      }))
 
-    const savedGuide = await saveGuide(guideRecord, steps)
-    if (!savedGuide) return jsonError('Failed to save guide to database')
+    // ── Step 7: save to database ─────────────────────────────────────────────
+    let savedGuide
+    try {
+      savedGuide = await saveGuide(guideRecord, steps)
+    } catch (e) {
+      console.error('[/api/guide] saveGuide threw:', e)
+      return jsonError(`Failed to save guide: ${e instanceof Error ? e.message : String(e)}`, 500, 'db_save')
+    }
+    if (!savedGuide) return jsonError('Failed to save guide to database', 500, 'db_save')
 
     return NextResponse.json({ guide: savedGuide, cached: false })
 
   } catch (err) {
-    console.error('Unhandled /api/guide error:', err)
+    // Catch-all: should not normally be reached
+    console.error('[/api/guide] Unhandled error:', err)
     const msg = err instanceof Error ? err.message : String(err)
-    const status = err instanceof Anthropic.APIError ? (err.status ?? 500) : 500
-    return jsonError(`Guide generation failed: ${msg}`, status)
+    return jsonError(`Unexpected error: ${msg}`, 500, 'unknown')
   }
 }
 
@@ -209,7 +218,7 @@ export async function GET(req: NextRequest) {
     const task  = searchParams.get('task')
 
     if (!make || !model || !year || !task) {
-      return jsonError('Missing required fields', 400)
+      return jsonError('Missing required fields', 400, 'validate')
     }
 
     const car = await findOrCreateCar(make, model, parseInt(year))
@@ -218,7 +227,7 @@ export async function GET(req: NextRequest) {
     const guide = await findGuide(car.id, slugify(task))
     return NextResponse.json({ guide })
   } catch (err) {
-    console.error('Unhandled /api/guide GET error:', err)
-    return jsonError('Failed to fetch guide')
+    console.error('[/api/guide GET] error:', err)
+    return jsonError(`Failed to fetch guide: ${err instanceof Error ? err.message : String(err)}`, 500, 'unknown')
   }
 }

@@ -10,92 +10,114 @@ export function slugify(text: string): string {
 }
 
 export async function findOrCreateCar(make: string, model: string, year: number): Promise<Car | null> {
-  // Try to find existing car
+  const cleanMake  = make.trim()
+  const cleanModel = model.trim()
+
+  // 1. Try to find existing car (ignore PGRST116 "0 rows" error)
   const { data: existing } = await supabase
     .from('pc_cars')
     .select('*')
-    .eq('make', make.trim())
-    .eq('model', model.trim())
+    .eq('make', cleanMake)
+    .eq('model', cleanModel)
     .eq('year', year)
-    .single()
+    .maybeSingle()
 
   if (existing) return existing
 
-  // Create new car
+  // 2. Insert — use upsert to handle the rare race-condition duplicate
   const { data, error } = await supabase
     .from('pc_cars')
-    .insert({ make: make.trim(), model: model.trim(), year })
+    .upsert(
+      { make: cleanMake, model: cleanModel, year },
+      { onConflict: 'make,model,year', ignoreDuplicates: false }
+    )
     .select()
     .single()
 
   if (error) {
-    console.error('Error creating car:', error)
-    return null
+    console.error('[findOrCreateCar] upsert error:', error)
+    // Last-resort: try selecting again (the row may have been inserted by another request)
+    const { data: retry } = await supabase
+      .from('pc_cars')
+      .select('*')
+      .eq('make', cleanMake)
+      .eq('model', cleanModel)
+      .eq('year', year)
+      .maybeSingle()
+    return retry ?? null
   }
+
   return data
 }
 
 export async function findGuide(carId: string, taskSlug: string): Promise<Guide | null> {
   const { data, error } = await supabase
     .from('pc_guides')
-    .select(`
-      *,
-      pc_cars(*),
-      pc_guide_steps(*)
-    `)
+    .select('*, pc_cars(*), pc_guide_steps(*)')
     .eq('car_id', carId)
     .eq('task_slug', taskSlug)
-    .single()
+    .maybeSingle()
 
-  if (error || !data) return null
+  if (error) {
+    console.error('[findGuide] error:', error)
+    return null
+  }
+  if (!data) return null
 
-  // Sort steps by step_number
-  if (data.pc_guide_steps) {
+  if (Array.isArray(data.pc_guide_steps)) {
     data.pc_guide_steps.sort((a: GuideStep, b: GuideStep) => a.step_number - b.step_number)
   }
 
   return data
 }
 
-export async function saveGuide(guide: Omit<Guide, 'id' | 'created_at' | 'updated_at'>, steps: Omit<GuideStep, 'id' | 'guide_id' | 'created_at'>[]): Promise<Guide | null> {
-  // Insert the guide
+export async function saveGuide(
+  guide: Omit<Guide, 'id' | 'created_at' | 'updated_at'>,
+  steps: Omit<GuideStep, 'id' | 'guide_id' | 'created_at'>[],
+): Promise<Guide | null> {
+  // 1. Insert the guide record
   const { data: guideData, error: guideError } = await supabase
     .from('pc_guides')
     .insert({
-      car_id: guide.car_id,
-      task: guide.task,
-      task_slug: guide.task_slug,
-      overview: guide.overview,
-      difficulty: guide.difficulty,
+      car_id:         guide.car_id,
+      task:           guide.task,
+      task_slug:      guide.task_slug,
+      overview:       guide.overview,
+      difficulty:     guide.difficulty,
       estimated_time: guide.estimated_time,
-      tools_needed: guide.tools_needed,
-      parts_needed: guide.parts_needed,
-      safety_notes: guide.safety_notes,
+      tools_needed:   guide.tools_needed,
+      parts_needed:   guide.parts_needed,
+      safety_notes:   guide.safety_notes,
     })
     .select()
     .single()
 
   if (guideError || !guideData) {
-    console.error('Error saving guide:', guideError)
+    console.error('[saveGuide] guide insert error:', guideError)
     return null
   }
 
-  // Insert steps
-  const stepsWithGuideId = steps.map(step => ({
-    ...step,
-    guide_id: guideData.id,
-  }))
+  // 2. Insert steps (non-fatal if this fails)
+  let savedSteps: GuideStep[] = []
+  if (steps.length > 0) {
+    const { data: stepsData, error: stepsError } = await supabase
+      .from('pc_guide_steps')
+      .insert(steps.map(s => ({ ...s, guide_id: guideData.id })))
+      .select()
 
-  const { error: stepsError } = await supabase
-    .from('pc_guide_steps')
-    .insert(stepsWithGuideId)
-
-  if (stepsError) {
-    console.error('Error saving guide steps:', stepsError)
+    if (stepsError) {
+      console.error('[saveGuide] steps insert error:', stepsError)
+    } else {
+      savedSteps = (stepsData ?? []).sort((a: GuideStep, b: GuideStep) => a.step_number - b.step_number)
+    }
   }
 
-  // Return full guide
-  return findGuide(guide.car_id, guide.task_slug)
+  // 3. Return the assembled guide directly — avoids a second joined query
+  //    which could fail if FK relationships aren't configured in PostgREST
+  return {
+    ...guideData,
+    pc_guide_steps: savedSteps,
+  } as Guide
 }
 
 export async function getRecentGuides(limit = 10): Promise<Guide[]> {
@@ -105,8 +127,11 @@ export async function getRecentGuides(limit = 10): Promise<Guide[]> {
     .order('created_at', { ascending: false })
     .limit(limit)
 
-  if (error || !data) return []
-  return data
+  if (error) {
+    console.error('[getRecentGuides] error:', error)
+    return []
+  }
+  return data ?? []
 }
 
 export async function searchGuides(make: string, model: string, year: number): Promise<Guide[]> {
@@ -116,7 +141,7 @@ export async function searchGuides(make: string, model: string, year: number): P
     .eq('make', make)
     .eq('model', model)
     .eq('year', year)
-    .single()
+    .maybeSingle()
 
   if (!car) return []
 
@@ -126,6 +151,9 @@ export async function searchGuides(make: string, model: string, year: number): P
     .eq('car_id', car.id)
     .order('created_at', { ascending: false })
 
-  if (error || !data) return []
-  return data
+  if (error) {
+    console.error('[searchGuides] error:', error)
+    return []
+  }
+  return data ?? []
 }
