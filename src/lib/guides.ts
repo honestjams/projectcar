@@ -120,6 +120,51 @@ export async function saveGuide(
   } as Guide
 }
 
+export async function updateGuide(
+  guideId: string,
+  guide: Pick<Guide, 'overview' | 'difficulty' | 'estimated_time' | 'tools_needed' | 'parts_needed' | 'safety_notes'>,
+  steps: Omit<GuideStep, 'id' | 'guide_id' | 'created_at'>[],
+): Promise<Guide | null> {
+  // 1. Update guide record
+  const { data: guideData, error: guideError } = await supabase
+    .from('pc_guides')
+    .update({
+      overview:       guide.overview,
+      difficulty:     guide.difficulty,
+      estimated_time: guide.estimated_time,
+      tools_needed:   guide.tools_needed,
+      parts_needed:   guide.parts_needed,
+      safety_notes:   guide.safety_notes,
+    })
+    .eq('id', guideId)
+    .select('*, pc_cars(*)')
+    .single()
+
+  if (guideError || !guideData) {
+    console.error('[updateGuide] update error:', guideError)
+    return null
+  }
+
+  // 2. Replace steps
+  await supabase.from('pc_guide_steps').delete().eq('guide_id', guideId)
+
+  let savedSteps: GuideStep[] = []
+  if (steps.length > 0) {
+    const { data: stepsData, error: stepsError } = await supabase
+      .from('pc_guide_steps')
+      .insert(steps.map(s => ({ ...s, guide_id: guideId })))
+      .select()
+
+    if (stepsError) {
+      console.error('[updateGuide] steps insert error:', stepsError)
+    } else {
+      savedSteps = (stepsData ?? []).sort((a: GuideStep, b: GuideStep) => a.step_number - b.step_number)
+    }
+  }
+
+  return { ...guideData, pc_guide_steps: savedSteps } as Guide
+}
+
 export async function getRecentGuides(limit = 10): Promise<Guide[]> {
   const { data, error } = await supabase
     .from('pc_guides')

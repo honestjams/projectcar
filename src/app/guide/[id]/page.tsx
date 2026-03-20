@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import { Guide, GuideStep } from '@/lib/supabase'
 import Link from 'next/link'
+import FeedbackForm from './FeedbackForm'
 
 async function getGuide(id: string): Promise<Guide | null> {
   const { data, error } = await supabase
@@ -152,6 +153,9 @@ export default async function GuidePage({ params }: { params: Promise<{ id: stri
             ))}
           </div>
         </div>
+
+        {/* Feedback */}
+        <FeedbackForm guideId={guide.id} />
 
         {/* Footer CTA */}
         <div className="mt-12 border-t border-white/10 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">

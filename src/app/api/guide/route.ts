@@ -14,6 +14,65 @@ function jsonError(message: string, status = 500, step?: string) {
   return NextResponse.json(body, { status })
 }
 
+export function buildPrompt(year: number, make: string, model: string, task: string, feedback?: string): string {
+  const feedbackSection = feedback
+    ? `\n\nUSER CORRECTION — a previous version of this guide was wrong. The user reported:\n"${feedback}"\nYou MUST address this correction. Double-check every relevant detail against this feedback before writing.`
+    : ''
+
+  return `You are an expert automotive mechanic and technical writer with access to factory service manuals.
+
+YEAR-SPECIFIC ACCURACY IS CRITICAL. This guide is ONLY for the ${year} ${make} ${model}.
+
+Before writing anything, internally verify:
+1. What engine code(s) were available in the ${year} ${make} ${model} specifically (e.g. VQ35DE vs VQ35HR)?
+2. What trim variants existed for this exact model year, and do any affect this task?
+3. What changed between adjacent model years that could affect this task (e.g. mid-cycle engine swap, revised intake system)?
+
+Then write the guide ONLY for the ${year} model year. Do NOT include steps, parts, or specifications that apply to a different model year or a different engine variant than what was in the ${year} ${make} ${model}.${feedbackSection}
+
+Generate a detailed, accurate, step-by-step maintenance guide for:
+Vehicle: ${year} ${make} ${model}
+Task: ${task}
+
+Use factory service procedures, OEM torque specifications, and required tools for this EXACT year and variant.
+
+Respond with ONLY valid JSON in exactly this format — no extra text, no markdown fences:
+{
+  "task": "${task}",
+  "overview": "Brief 2-3 sentence description. If there are year-specific details (engine variant, number of filters, etc.) mention them here.",
+  "difficulty": "Beginner",
+  "estimated_time": "e.g. 30-45 minutes",
+  "tools_needed": [
+    { "name": "Tool name", "size": "e.g. 14mm", "type": "socket" }
+  ],
+  "parts_needed": [
+    { "name": "Part name", "part_number": "OEM part number if known", "quantity": 1, "notes": "notes" }
+  ],
+  "safety_notes": [
+    "Safety warning 1"
+  ],
+  "steps": [
+    {
+      "step_number": 1,
+      "title": "Short step title",
+      "description": "Detailed description of exactly what to do.",
+      "specs": [
+        { "label": "Torque spec", "value": "25", "unit": "Nm" }
+      ],
+      "tips": ["Helpful tip"],
+      "image_search_query": "${year} ${make} ${model} ${task} step 1"
+    }
+  ]
+}
+
+Rules:
+- difficulty must be exactly one of: Beginner, Intermediate, Advanced, Professional
+- Include ALL factory torque specs in the relevant step's specs array
+- Include at least 6 detailed steps
+- parts_needed quantities must reflect what the ${year} model actually requires (e.g. 1 air filter if single intake, 2 if dual intake)
+- Output ONLY the JSON object — nothing before or after it`
+}
+
 export async function POST(req: NextRequest) {
   try {
     // ── Step 1: parse request ────────────────────────────────────────────────
@@ -60,48 +119,7 @@ export async function POST(req: NextRequest) {
     if (existing) return NextResponse.json({ guide: existing, cached: true })
 
     // ── Step 4: generate guide with Claude ───────────────────────────────────
-    const prompt = `You are an expert automotive mechanic and technical writer with access to factory service manuals.
-
-Generate a detailed, accurate, step-by-step maintenance guide for:
-Vehicle: ${year} ${make} ${model}
-Task: ${task}
-
-Use your knowledge of factory service procedures, OEM torque specifications, and required tools for this specific vehicle.
-
-Respond with ONLY valid JSON in exactly this format — no extra text, no markdown fences:
-{
-  "task": "${task}",
-  "overview": "Brief 2-3 sentence description of what this job involves and why it matters",
-  "difficulty": "Beginner",
-  "estimated_time": "e.g. 30-45 minutes",
-  "tools_needed": [
-    { "name": "Tool name", "size": "e.g. 14mm", "type": "socket" }
-  ],
-  "parts_needed": [
-    { "name": "Part name", "part_number": "OEM part number if known", "quantity": 1, "notes": "notes" }
-  ],
-  "safety_notes": [
-    "Safety warning 1"
-  ],
-  "steps": [
-    {
-      "step_number": 1,
-      "title": "Short step title",
-      "description": "Detailed description of exactly what to do.",
-      "specs": [
-        { "label": "Torque spec", "value": "25", "unit": "Nm" }
-      ],
-      "tips": ["Helpful tip"],
-      "image_search_query": "${year} ${make} ${model} ${task} step 1"
-    }
-  ]
-}
-
-Rules:
-- difficulty must be exactly one of: Beginner, Intermediate, Advanced, Professional
-- Include ALL factory torque specs in the relevant step's specs array
-- Include at least 6 detailed steps
-- Output ONLY the JSON object — nothing before or after it`
+    const prompt = buildPrompt(year, make, model, task)
 
     let guideJson: string
     try {
