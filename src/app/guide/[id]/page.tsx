@@ -157,6 +157,14 @@ export default async function GuidePage({ params }: { params: Promise<{ id: stri
         <div className="mt-12 border-t border-white/10 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div>
             <p className="text-white/50 text-sm">Need a guide for a different task?</p>
+            <a
+              href="https://www.paypal.me/joshbe2802"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-orange-400/60 hover:text-orange-400 transition-colors mt-1 inline-block"
+            >
+              Support this project ☕
+            </a>
           </div>
           <Link
             href="/"

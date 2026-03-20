@@ -70,9 +70,14 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ make, model, year: parseInt(year), task }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || 'Something went wrong')
-      router.push(`/guide/${data.guide.id}`)
+      let data: Record<string, unknown> = {}
+      try {
+        data = await res.json()
+      } catch {
+        // Response was not valid JSON (e.g. server timeout or gateway error)
+      }
+      if (!res.ok) throw new Error((data.error as string) || 'Something went wrong')
+      router.push(`/guide/${(data.guide as { id: string }).id}`)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong')
       setLoading(false)
@@ -279,6 +284,16 @@ export default function Home() {
 
       <footer className="border-t border-white/10 mt-16 py-8 px-4 text-center text-white/25 text-sm">
         ProjectCar — Community-powered car maintenance guides
+        <div className="mt-2">
+          <a
+            href="https://www.paypal.me/joshbe2802"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-orange-400/60 hover:text-orange-400 transition-colors"
+          >
+            Support this project ☕
+          </a>
+        </div>
       </footer>
     </div>
   )
